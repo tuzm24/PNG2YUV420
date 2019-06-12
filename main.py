@@ -8,6 +8,10 @@ import subprocess
 import time
 import logging
 
+import threading
+
+lock = threading.Lock()
+
 
 
 IS_PART_DATASET = False
@@ -63,7 +67,16 @@ class PNGtoYUV(object):
             size = im.size
             # yuvim = im.convert('YCbCr')
             rgbarr = np.asarray(im)
+            width = size[0]
+            height = size[1]
+            if width%8 != 0:
+                width -= width%8
+            if height%8 != 0:
+                height -= height%8
+            rgbarr = rgbarr[:height, :width, :]
+
             yuvarr = self.RGB2YUV(rgbarr)
+
             #
             # with open(os.path.join(self.savepath,'444test.yuv'), 'wb') as f:
             #     pixnum = str(size[0]*size[1]*3)
@@ -72,10 +85,10 @@ class PNGtoYUV(object):
             v = self.downSamplingUV(yuvarr[:,:,2])
             flattenYUV = np.concatenate((yuvarr[:,:,0].flatten(), u.flatten(), v.flatten()), axis =0).astype('uint8')
 
-            newName = str(os.path.basename(file).split('.png')[0])+'_' + str(size[0]) + 'x' + str(size[1]) + '_8bit_P420.yuv'
+            newName = str(os.path.basename(file).split('.png')[0])+'_' + str(width) + 'x' + str(height) + '_8bit_P420.yuv'
             newPath = os.path.join(yuvpath, newName)
             with open(newPath, 'wb') as f:
-                pixnum = str(size[0]*size[1] + (size[0]*size[1])//2)
+                pixnum = str(width*height + (width*height)//2)
                 f.write(struct.pack(pixnum + 'B', *flattenYUV))
 
     def RGB2YUV(self, rgb):
@@ -131,9 +144,10 @@ class Encode(object):
 
 
     def get_enc_command(self, name, qp):
-        binpath = os.path.join(self.bin_path, name + '.bin')
+        fullname = 'AI_PNG_'+name + '_Q' + qp
+        binpath = os.path.join(self.bin_path, fullname + '.bin')
         seqpath = os.path.join(self.tmp_path, name + '.cfg')
-        logpath = os.path.join(self.log_path, name + '.log')
+        logpath = os.path.join(self.log_path, fullname + '.log')
         enc_command = self.encoder_path + ' -c ' + self.cnd_path + ' -c ' + seqpath + ' -q ' + qp + ' -b ' + binpath
         return enc_command, logpath
 
@@ -167,14 +181,16 @@ class Encode(object):
 
     def runProcess(self,  imgpath, qp):
         cndpath = self.make_seqcfg_file(imgpath)
-        name = (str)(os.path.basename(imgpath).split('.')[0]) + '_Q' + qp
+        name = (str)(os.path.basename(imgpath).split('.')[0])
         command, logpath = self.get_enc_command(name=name, qp = qp)
-        logger.info('Start Encode : %s' %(name))
+        logger.info('Start Encode : %s' %(name + '_Q' + qp))
         with open(logpath, 'w') as fp:
             sub_proc = subprocess.Popen(command, stdout = fp)
             sub_proc.wait()
         os.remove(cndpath)
+        lock.acquire()
         self.running_cpu -=1
+        lock.release()
         return
 
     def runThread(self):
@@ -186,7 +202,9 @@ class Encode(object):
                 t = Thread(target=self.runProcess, args = (imgpath, qp, ))
                 t.daemon = True
                 t.start()
+                lock.acquire()
                 self.running_cpu += 1
+                lock.release()
 
 
 
